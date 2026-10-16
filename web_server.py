@@ -18,6 +18,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import radar_helpers
 import airline_providers
+import database
+import forex_engine
+import smart_hubs
+import telegram_bot
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TRACKS_FILE = os.path.join(BASE_DIR, 'tracked_flights.json')
@@ -175,6 +179,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             margin-top: 16px;
             flex-wrap: wrap;
         }
+
+        /* Forex Ticker Bar */
+        .forex-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: #fdfaf3;
+            border: 1px solid #ebd8b6;
+            border-left: 4px solid #b88230;
+            padding: 8px 14px;
+            border-radius: 4px;
+            margin-top: 16px;
+            font-size: 12px;
+            font-family: var(--font-mono);
+            flex-wrap: wrap;
+        }
+        .forex-title { font-weight: 700; color: #8e6220; }
+        .forex-item { color: #333; }
+        .forex-source { margin-left: auto; color: #777; font-size: 11px; }
 
         /* Buttons */
         .btn {
@@ -767,8 +790,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <button type="button" class="btn btn-primary" onclick="scanNow()" id="btnScan">⚡ Şimdi Tara</button>
                 <button type="button" class="btn btn-secondary" onclick="toggleDaemon()" id="btnDaemon">▶ Radarı Başlat</button>
                 <button type="button" class="btn btn-secondary" onclick="openLogModal()">📜 Günlük</button>
+                <button type="button" class="btn btn-secondary" onclick="openTelegramModal()">🤖 Telegram Bildirimi</button>
                 <button type="button" class="btn btn-secondary" onclick="testNotify()">🔔 Test Bildirimi</button>
             </div>
+            __FOREX_BAR__
         </header>
 
         <!-- Travel Tips -->
@@ -799,16 +824,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
 
             <div class="preset-container" style="margin-top:-6px;">
-                <span class="preset-title">🛫 Hızlı Havalimanı Seçimi:</span>
+                <span class="preset-title">🛫 Hızlı Havalimanı & Akıllı Hub:</span>
                 <div class="preset-row">
+                    <button type="button" class="chip-btn" onclick="selectAirport('IST_ALL')">🌐 İstanbul Tümü (IST+SAW)</button>
+                    <button type="button" class="chip-btn" onclick="selectAirport('EGE_ALL')">🌐 Ege Tümü (ADB+BJV+DLM)</button>
                     <button type="button" class="chip-btn" onclick="selectAirport('ADB')">İzmir (ADB)</button>
                     <button type="button" class="chip-btn" onclick="selectAirport('SAW')">Sabiha (SAW)</button>
                     <button type="button" class="chip-btn" onclick="selectAirport('IST')">İstanbul (IST)</button>
                     <button type="button" class="chip-btn" onclick="selectAirport('ESB')">Ankara (ESB)</button>
                     <button type="button" class="chip-btn" onclick="selectAirport('AYT')">Antalya (AYT)</button>
-                    <button type="button" class="chip-btn" onclick="selectAirport('TZX')">Trabzon (TZX)</button>
-                    <button type="button" class="chip-btn" onclick="selectAirport('BJV')">Bodrum (BJV)</button>
-                    <button type="button" class="chip-btn" onclick="selectAirport('DLM')">Dalaman (DLM)</button>
                     <button type="button" class="chip-btn" onclick="selectAirport('BER')">Berlin (BER)</button>
                 </div>
             </div>
@@ -890,6 +914,34 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
                 <div class="modal-body">
                     <pre id="logContent" class="log-pre">Loglar yükleniyor...</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Telegram Settings Modal -->
+        <div id="telegramModal" class="modal-overlay" onclick="if(event.target===this)closeTelegramModal()">
+            <div class="modal-content" style="max-width:480px;">
+                <div class="modal-header">
+                    <span>🤖 TELEGRAM BOT BİLDİRİM AYARLARI</span>
+                    <button type="button" class="btn btn-secondary" onclick="closeTelegramModal()" style="padding:4px 10px; font-size:12px;">Kapat ✕</button>
+                </div>
+                <div class="modal-body" style="padding:16px;">
+                    <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px; line-height:1.4;">
+                        Hedef altı veya tüm zamanların dip fiyatı yakalandığında anında Telegram mesajı alın. @BotFather üzerinden aldığınız bot token ve chat id'nizi girin.
+                    </p>
+                    <div style="margin-bottom:12px;">
+                        <label style="display:block; font-size:11px; font-family:var(--font-mono); margin-bottom:4px; font-weight:700; color:var(--text);">BOT TOKEN</label>
+                        <input type="text" id="tgBotTokenInput" placeholder="Örn: 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ" style="width:100%; padding:8px 10px; font-size:13px; font-family:var(--font-mono); background:#262422; color:#fff; border:1px solid #444; border-radius:4px; box-sizing:border-box;">
+                    </div>
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:11px; font-family:var(--font-mono); margin-bottom:4px; font-weight:700; color:var(--text);">CHAT ID / KANAL KULLANICI ADI</label>
+                        <input type="text" id="tgChatIdInput" placeholder="Örn: 987654321 veya @kanal_adi" style="width:100%; padding:8px 10px; font-size:13px; font-family:var(--font-mono); background:#262422; color:#fff; border:1px solid #444; border-radius:4px; box-sizing:border-box;">
+                    </div>
+                    <div style="display:flex; gap:10px;">
+                        <button type="button" class="btn btn-primary" onclick="saveTelegramSettings()">💾 Kaydet</button>
+                        <button type="button" class="btn btn-secondary" onclick="testTelegramBot()">⚡ Test Mesajı Gönder</button>
+                    </div>
+                    <div id="tgStatusAlert" style="margin-top:12px; font-size:12px; display:none; padding:8px; border-radius:4px;"></div>
                 </div>
             </div>
         </div>
@@ -1268,6 +1320,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function sanitizeIATA(input) {
             if (!input || !input.value) return;
             let val = input.value.trim().toUpperCase();
+            if (val.includes('_ALL')) {
+                input.value = val;
+                return;
+            }
             const match = val.match(/^([A-Z]{3})\b/);
             if (match) {
                 input.value = match[1];
@@ -1541,6 +1597,79 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('logModal').style.display = 'none';
         }
 
+        async function openTelegramModal() {
+            const modal = document.getElementById('telegramModal');
+            modal.style.display = 'flex';
+            const alertDiv = document.getElementById('tgStatusAlert');
+            alertDiv.style.display = 'none';
+            try {
+                const res = await fetch('/api/telegram/settings');
+                const data = await res.json();
+                if (data.chat_id) document.getElementById('tgChatIdInput').value = data.chat_id;
+                if (data.bot_token_masked) document.getElementById('tgBotTokenInput').value = data.bot_token_masked;
+            } catch (e) {
+                console.error("Telegram get settings error:", e);
+            }
+        }
+
+        function closeTelegramModal() {
+            document.getElementById('telegramModal').style.display = 'none';
+        }
+
+        async function saveTelegramSettings() {
+            const botToken = document.getElementById('tgBotTokenInput').value.trim();
+            const chatId = document.getElementById('tgChatIdInput').value.trim();
+            const alertDiv = document.getElementById('tgStatusAlert');
+            alertDiv.style.display = 'block';
+            alertDiv.style.background = '#333';
+            alertDiv.style.color = '#fff';
+            alertDiv.innerText = 'Kaydediliyor...';
+
+            try {
+                const res = await fetch('/api/telegram/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bot_token: botToken, chat_id: chatId })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    alertDiv.style.background = '#1b5e20';
+                    alertDiv.innerText = '✅ ' + (data.message || 'Başarıyla kaydedildi!');
+                    showToast('🤖 Telegram ayarları güncellendi.');
+                } else {
+                    alertDiv.style.background = '#b71c1c';
+                    alertDiv.innerText = '⚠️ Hata: ' + (data.error || 'Kaydedilemedi');
+                }
+            } catch (e) {
+                alertDiv.style.background = '#b71c1c';
+                alertDiv.innerText = '⚠️ İstek hatası: ' + e;
+            }
+        }
+
+        async function testTelegramBot() {
+            const alertDiv = document.getElementById('tgStatusAlert');
+            alertDiv.style.display = 'block';
+            alertDiv.style.background = '#333';
+            alertDiv.style.color = '#fff';
+            alertDiv.innerText = 'Telegram mesajı iletiliyor...';
+
+            try {
+                const res = await fetch('/api/telegram/test', { method: 'POST' });
+                const data = await res.json();
+                if (data.ok) {
+                    alertDiv.style.background = '#1b5e20';
+                    alertDiv.innerText = '✅ Test mesajı Telegram botunuza başarıyla iletildi!';
+                    showToast('✈️ Telegram mesajı iletildi!');
+                } else {
+                    alertDiv.style.background = '#b71c1c';
+                    alertDiv.innerText = '⚠️ Telegram Hatası: ' + (data.error || 'Mesaj gönderilemedi. Token veya Chat ID hatalı olabilir.');
+                }
+            } catch (e) {
+                alertDiv.style.background = '#b71c1c';
+                alertDiv.innerText = '⚠️ Test hatası: ' + e;
+            }
+        }
+
         async function updateStatus() {
             try {
                 const res = await fetch('/api/status');
@@ -1715,7 +1844,11 @@ class RadarHandler(BaseHTTPRequestHandler):
         elif parsed.path == '/api/logs':
             self.send_json({'logs': radar_helpers.get_recent_logs(50)})
         elif parsed.path == '/api/airports':
-            self.send_json({'airports': airline_providers.get_all_airports_list()})
+            self.send_json({'airports': smart_hubs.get_all_hubs_and_airports()})
+        elif parsed.path == '/api/forex':
+            self.handle_forex()
+        elif parsed.path == '/api/telegram/settings':
+            self.handle_telegram_settings_get()
         else:
             self.send_error(404)
 
@@ -1735,8 +1868,56 @@ class RadarHandler(BaseHTTPRequestHandler):
             self.send_json(radar_helpers.stop_daemon())
         elif parsed.path == '/api/arbitrage':
             self.handle_arbitrage()
+        elif parsed.path == '/api/telegram/settings':
+            self.handle_telegram_settings_post()
+        elif parsed.path == '/api/telegram/test':
+            self.handle_telegram_test()
         else:
             self.send_error(404)
+
+    def handle_forex(self):
+        try:
+            rates = forex_engine.get_live_rates()
+            self.send_json(rates)
+        except Exception as e:
+            log(f"Forex API error: {e}")
+            self.send_json({'ok': False, 'error': str(e)}, 500)
+
+    def handle_telegram_settings_get(self):
+        cfg = telegram_bot.get_telegram_config()
+        raw_token = cfg.get('bot_token') or ''
+        masked_token = (raw_token[:6] + '...' + raw_token[-4:]) if len(raw_token) > 10 else raw_token
+        self.send_json({
+            'ok': True,
+            'is_configured': bool(cfg.get('bot_token') and cfg.get('chat_id')),
+            'chat_id': cfg.get('chat_id', ''),
+            'bot_token_masked': masked_token,
+            'has_token': bool(raw_token)
+        })
+
+    def handle_telegram_settings_post(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode('utf-8')
+            data = json.loads(body)
+            bot_token = data.get('bot_token', '').strip()
+            chat_id = data.get('chat_id', '').strip()
+            if bot_token and not bot_token.startswith('...'):
+                database.set_setting('telegram_bot_token', bot_token)
+            if chat_id:
+                database.set_setting('telegram_chat_id', chat_id)
+            self.send_json({'ok': True, 'message': 'Telegram ayarları başarıyla kaydedildi.'})
+        except Exception as e:
+            log(f"Telegram settings save error: {e}")
+            self.send_json({'ok': False, 'error': str(e)}, 500)
+
+    def handle_telegram_test(self):
+        try:
+            res = telegram_bot.test_telegram_connection()
+            self.send_json(res)
+        except Exception as e:
+            log(f"Telegram test error: {e}")
+            self.send_json({'ok': False, 'error': str(e)}, 500)
 
     def handle_arbitrage(self):
         try:
@@ -1756,9 +1937,25 @@ class RadarHandler(BaseHTTPRequestHandler):
             self.send_json({'ok': False, 'error': str(e)}, 500)
 
     def handle_index(self):
-        tracks = load_json(TRACKS_FILE, [])
-        campaigns = load_json(RSS_DB_FILE, [])
+        tracks = database.get_all_routes()
+        campaigns = database.get_all_campaigns()
+        forex_data = forex_engine.get_live_rates()
         last_check = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+
+        rates = forex_data.get('rates', {})
+        usd = rates.get('USD', '—')
+        eur = rates.get('EUR', '—')
+        gbp = rates.get('GBP', '—')
+        date_str = forex_data.get('date', '')
+        forex_bar_html = f'''
+        <div class="forex-bar">
+            <span class="forex-title">🏛️ TCMB CANLI KUR:</span>
+            <span class="forex-item"><b>USD:</b> {usd} TL</span>
+            <span class="forex-item"><b>EUR:</b> {eur} TL</span>
+            <span class="forex-item"><b>GBP:</b> {gbp} TL</span>
+            <span class="forex-source">TCMB today.xml ({date_str}) • Çapraz Kur Arbitrajı Aktif</span>
+        </div>
+        '''
 
         # Static rendering for fast first paint
         track_items = ''
@@ -1867,18 +2064,20 @@ class RadarHandler(BaseHTTPRequestHandler):
                 {f'<div class="campaign-date">{date}</div>' if date else ''}
             </div>'''
 
-        airports_options = "".join([f'<option value="{code}">{code} - {info["city"]} ({info["name"]})</option>' for code, info in airline_providers.AIRPORTS.items()])
+        all_ports = smart_hubs.get_all_hubs_and_airports()
+        airports_options = "".join([f'<option value="{item["code"]}">{html.escape(item["label"])}</option>' for item in all_ports])
         rendered = HTML_TEMPLATE.replace('__LAST_CHECK__', last_check)
         rendered = rendered.replace('__TRACK_COUNT__', str(len(tracks)))
         rendered = rendered.replace('__AIRPORTS_DATALIST__', airports_options)
+        rendered = rendered.replace('__FOREX_BAR__', forex_bar_html)
         rendered = rendered.replace('__TRACK_ITEMS__', track_items if tracks else '<div class="empty-state">Henüz takip edilen rota yok.</div>')
         rendered = rendered.replace('__CAMPAIGN_ITEMS__', campaign_items if campaign_list else '<div class="empty-state">Henüz kampanya yok.</div>')
 
         self.send_html(rendered)
 
     def handle_status(self):
-        tracks = load_json(TRACKS_FILE, [])
-        campaigns = load_json(RSS_DB_FILE, [])
+        tracks = database.get_all_routes()
+        campaigns = database.get_all_campaigns()
         last_check = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
         daemon_status = radar_helpers.get_daemon_status()
         self.send_json({
@@ -1893,7 +2092,7 @@ class RadarHandler(BaseHTTPRequestHandler):
         try:
             cmd = [sys.executable, RADAR_SCRIPT, '--scan']
             subprocess.run(cmd, check=True)
-            tracks = load_json(TRACKS_FILE, [])
+            tracks = database.get_all_routes()
             log("Manuel tarama tetiklendi")
             self.send_json({'success': True, 'count': len(tracks)})
         except Exception as e:
@@ -1912,60 +2111,73 @@ class RadarHandler(BaseHTTPRequestHandler):
                     self.send_json({'success': False, 'error': f'Eksik alan: {field}'}, 400)
                     return
 
-            tracks = load_json(TRACKS_FILE, [])
-            new_id = f"trk_{int(datetime.datetime.now().timestamp())}"
-            now_str = datetime.datetime.now().strftime('%d.%m %H:%M')
-
             try:
                 target_price = float(data['target_price'])
             except (ValueError, TypeError):
                 self.send_json({'success': False, 'error': 'Geçersiz hedef fiyat formatı'}, 400)
                 return
 
-            track = {
-                'id': new_id,
-                'title': data['title'].strip(),
-                'origin': data['origin'].upper().strip(),
-                'destination': data['destination'].upper().strip(),
-                'departure_date': data['departure_date'].strip(),
-                'return_date': data.get('return_date', '').strip() or None,
-                'target_price': target_price,
-                'current_price': None,
-                'last_price': None,
-                'lowest_recorded': None,
-                'airline': None,
-                'flight_time': None,
-                'best_flight': {},
-                'search_url': None,
-                'last_checked': now_str,
-                'price_history': []
-            }
+            orig = data['origin'].upper().strip()
+            dest = data['destination'].upper().strip()
+            pairs = smart_hubs.expand_routes_for_hub(orig, dest)
+            if not pairs:
+                pairs = [(orig, dest)]
 
-            try:
-                crawler = load_crawler()
-                res = crawler.search_flights(track['origin'], track['destination'], track['departure_date'], track.get('return_date'))
-                if res.get('ok') and res.get('flights'):
-                    cheapest = res['flights'][0]
-                    p = cheapest.get('price')
-                    track['current_price'] = p
-                    track['last_price'] = p
-                    track['lowest_recorded'] = p
-                    track['airline'] = cheapest.get('airline')
-                    track['flight_time'] = f"{cheapest.get('departure_time')} - {cheapest.get('arrival_time')}"
-                    track['best_flight'] = cheapest
-                    track['search_url'] = res.get('search_url')
-                    track['price_history'] = [{
-                        'time': now_str,
-                        'price': p,
-                        'airline': cheapest.get('airline', 'Havayolu')
-                    }]
-            except Exception as e:
-                log(f"Yeni rota ilk tarama hatası: {e}")
+            now_str = datetime.datetime.now().strftime('%d.%m %H:%M')
+            created_tracks = []
 
-            tracks.append(track)
-            save_json(TRACKS_FILE, tracks)
-            log(f"Yeni rota eklendi: {track['title']}")
-            self.send_json({'success': True, 'track': track})
+            for p_orig, p_dest in pairs:
+                sub_id = f"trk_{int(datetime.datetime.now().timestamp())}_{p_orig}_{p_dest}"
+                route_title = data['title'].strip()
+                if len(pairs) > 1:
+                    route_title = f"[{p_orig} ⇄ {p_dest}] {route_title}"
+
+                track = {
+                    'id': sub_id,
+                    'title': route_title,
+                    'origin': p_orig,
+                    'destination': p_dest,
+                    'departure_date': data['departure_date'].strip(),
+                    'return_date': data.get('return_date', '').strip() or None,
+                    'target_price': target_price,
+                    'current_price': None,
+                    'last_price': None,
+                    'lowest_recorded': None,
+                    'airline': None,
+                    'flight_time': None,
+                    'best_flight': {},
+                    'search_url': None,
+                    'last_checked': now_str,
+                    'price_history': []
+                }
+
+                try:
+                    crawler = load_crawler()
+                    res = crawler.search_flights(track['origin'], track['destination'], track['departure_date'], track.get('return_date'))
+                    if res.get('ok') and res.get('flights'):
+                        cheapest = res['flights'][0]
+                        p = cheapest.get('price')
+                        track['current_price'] = p
+                        track['last_price'] = p
+                        track['lowest_recorded'] = p
+                        track['airline'] = cheapest.get('airline')
+                        track['flight_time'] = f"{cheapest.get('departure_time')} - {cheapest.get('arrival_time')}"
+                        track['best_flight'] = cheapest
+                        track['search_url'] = res.get('search_url')
+                        track['price_history'] = [{
+                            'time': now_str,
+                            'price': p,
+                            'airline': cheapest.get('airline', 'Havayolu')
+                        }]
+                except Exception as e:
+                    log(f"Yeni rota ilk tarama hatası ({p_orig}-{p_dest}): {e}")
+
+                database.add_route(track)
+                created_tracks.append(track)
+
+            database.sync_to_legacy_json()
+            log(f"Yeni rota(lar) eklendi (SQLite): {len(created_tracks)} adet")
+            self.send_json({'success': True, 'track': created_tracks[0] if created_tracks else {}})
         except Exception as e:
             log(f"Add track error: {e}")
             self.send_json({'success': False, 'error': str(e)}, 500)
@@ -1981,10 +2193,9 @@ class RadarHandler(BaseHTTPRequestHandler):
                 self.send_json({'success': False, 'error': 'Eksik id'}, 400)
                 return
 
-            tracks = load_json(TRACKS_FILE, [])
-            tracks = [t for t in tracks if str(t.get('id')) != str(track_id)]
-            save_json(TRACKS_FILE, tracks)
-            log(f"Takip silindi: {track_id}")
+            database.delete_route(str(track_id))
+            database.sync_to_legacy_json()
+            log(f"Takip silindi (SQLite): {track_id}")
             self.send_json({'success': True})
         except Exception as e:
             log(f"Delete track error: {e}")

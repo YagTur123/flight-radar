@@ -11,6 +11,8 @@ import traceback
 import math
 
 from flight_crawler import search_flights
+import database
+import telegram_bot
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TRACKS_FILE = os.path.join(BASE_DIR, 'tracked_flights.json')
@@ -108,6 +110,10 @@ def fetch_rss_campaigns():
         # Son 300 kaydı sakla
         rss_db['seen'] = list(seen_set)[-300:]
         save_json_file(RSS_DB_FILE, rss_db)
+        
+        # SQLite DB'ye de kaydet
+        for item in new_items:
+            database.add_campaign(item['title'], item.get('link'))
     except Exception as e:
         log(f"⚠️ RSS tarama hatası: {e}")
 
@@ -120,13 +126,8 @@ def fetch_rss_campaigns():
     return new_items
 
 def run_tracked_flights_scan(force_bulletin=False):
-    raw_data = load_json_file(TRACKS_FILE, [])
-    if isinstance(raw_data, dict):
-        tracks = raw_data.get('tracks', [])
-    elif isinstance(raw_data, list):
-        tracks = raw_data
-    else:
-        tracks = []
+    database.init_db()
+    tracks = database.get_all_routes()
 
     if not tracks:
         log("ℹ️ Takip edilen aktif uçuş bulunamadı.")
@@ -135,8 +136,6 @@ def run_tracked_flights_scan(force_bulletin=False):
     today_str = datetime.now().strftime('%Y-%m-%d')
     rss_db = load_rss_db()
     bulletin_sent_today = rss_db.get('bulletin_sent', {}).get(today_str, False)
-
-    file_needs_save = False
 
     for track in tracks:
         origin = track.get('origin', 'ADB')
@@ -164,45 +163,28 @@ def run_tracked_flights_scan(force_bulletin=False):
         cheapest = flights[0] # Fiyata göre sıralı geliyor
         current_price = cheapest.get('price', 0)
         lowest_recorded = track.get('lowest_recorded', float('inf'))
-        last_price = track.get('last_price', None)
-        track['search_url'] = res.get('search_url', '')
+        airline = cheapest.get('airline', 'Havayolu')
+        dep_time = cheapest.get('departure_time', '')
+        arr_time = cheapest.get('arrival_time', '')
+        flight_time = f"{dep_time} - {arr_time}" if dep_time else ""
+        search_url = res.get('search_url', '')
 
         # Hedef fiyatın altına düştü mü?
         if current_price <= target_price:
-            airline = cheapest.get('airline', 'Havayolu')
-            dep_time = cheapest.get('departure_time', '')
-            arr_time = cheapest.get('arrival_time', '')
             msg = f"✈️ Bilet Hedef Fiyatın Altında!\n{title}: {current_price} TL (Hedef: {target_price} TL)\n{airline} ({dep_time} - {arr_time})"
             log(f"🎯 {msg}")
-            send_notification("✈️ Bilet Hedef Fiyatın Altında!", msg, url=track.get('search_url'))
+            send_notification("✈️ Bilet Hedef Fiyatın Altında!", msg, url=search_url)
+            telegram_bot.dispatch_deal_alert(track, current_price, target_price, lowest_recorded, search_url)
 
         # Yeni dip fiyat (rekor ucuzluk) görüldü mü?
         if current_price < lowest_recorded:
-            track['lowest_recorded'] = current_price
-            msg = f"🔥 Yeni Rekor Dip Fiyat! {title}: {current_price} TL ({cheapest.get('airline')})"
+            msg = f"🔥 Yeni Rekor Dip Fiyat! {title}: {current_price} TL ({airline})"
             log(f"🔥 {msg}")
-            send_notification("🔥 Yeni Rekor Dip Fiyat!", msg, url=track.get('search_url'))
+            send_notification("🔥 Yeni Rekor Dip Fiyat!", msg, url=search_url)
+            telegram_bot.dispatch_deal_alert(track, current_price, target_price, lowest_recorded, search_url)
 
-        track['best_flight'] = cheapest
-        track['last_price'] = current_price
-        track['last_checked'] = datetime.now().strftime('%Y-%m-%d %H:%M')
-
-        # Fiyat geçmişi zaman serisi (Son 100 kayıt)
-        if 'price_history' not in track or not isinstance(track['price_history'], list):
-            track['price_history'] = []
-        now_entry = datetime.now().strftime('%d.%m %H:%M')
-        if not track['price_history'] or track['price_history'][-1].get('time') != now_entry or track['price_history'][-1].get('price') != current_price:
-            track['price_history'].append({
-                'time': now_entry,
-                'price': current_price,
-                'airline': cheapest.get('airline', 'Havayolu')
-            })
-            track['price_history'] = track['price_history'][-100:]
-
-        file_needs_save = True
-
-    if file_needs_save:
-        save_json_file(TRACKS_FILE, tracks)
+        # SQLite veritabanına ve zaman serisine kaydet
+        database.update_route_price(track['id'], current_price, airline, flight_time, search_url)
 
     # Günlük bülten kontrolü (saat 9 veya sonrası ve bugün henüz gönderilmediyse)
     if force_bulletin or (datetime.now().hour >= 9 and not bulletin_sent_today):
