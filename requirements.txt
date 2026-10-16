@@ -1,0 +1,2 @@
+# Standart Python kütüphaneleri kullanılmaktadır (urllib, http.server, json, re, concurrent.futures)
+# Ekstra bağımlılık gerektirmez.

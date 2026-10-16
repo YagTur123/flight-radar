@@ -168,3 +168,81 @@ def get_flexible_date_links(origin, destination, dep_date_str, ret_date_str=None
     except Exception:
         pass
     return links
+
+# ==========================================
+# CLOUDFLARE GLOBAL INTERNET TUNNEL MOTORU
+# ==========================================
+TUNNEL_LOG = os.path.join(BASE_DIR, 'tunnel.log')
+TUNNEL_URL_FILE = os.path.join(BASE_DIR, 'tunnel_url.txt')
+
+def get_tunnel_status():
+    """Cloudflare Tunnel durumunu ve güncel public HTTPS URL'sini döner."""
+    try:
+        res = subprocess.run(['pgrep', '-fa', 'cloudflared tunnel'], capture_output=True, text=True)
+        lines = [l.strip() for l in res.stdout.strip().split('\n') if l.strip()]
+        if lines:
+            parts = lines[0].split()
+            pid = int(parts[0])
+            url = None
+            if os.path.exists(TUNNEL_URL_FILE):
+                try:
+                    with open(TUNNEL_URL_FILE, 'r', encoding='utf-8') as f:
+                        url = f.read().strip()
+                except Exception:
+                    pass
+            return {'running': True, 'pid': pid, 'url': url}
+        return {'running': False, 'pid': None, 'url': None}
+    except Exception as e:
+        return {'running': False, 'pid': None, 'url': None, 'error': str(e)}
+
+def start_tunnel(port=8080):
+    """Cloudflare Quick Tunnel başlatır ve public URL'yi tespit eder."""
+    status = get_tunnel_status()
+    if status['running'] and status.get('url'):
+        return status
+
+    try:
+        stop_tunnel()
+        if os.path.exists(TUNNEL_URL_FILE):
+            os.remove(TUNNEL_URL_FILE)
+
+        log_fp = open(TUNNEL_LOG, 'w', encoding='utf-8')
+        proc = subprocess.Popen(
+            ['cloudflared', 'tunnel', '--url', f'http://127.0.0.1:{port}'],
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
+
+        tunnel_url = None
+        import re
+        for _ in range(24):
+            time.sleep(0.5)
+            if os.path.exists(TUNNEL_LOG):
+                try:
+                    with open(TUNNEL_LOG, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        m = re.search(r'https://[a-zA-Z0-9\-]+\.trycloudflare\.com', content)
+                        if m:
+                            tunnel_url = m.group(0)
+                            with open(TUNNEL_URL_FILE, 'w', encoding='utf-8') as uf:
+                                uf.write(tunnel_url)
+                            break
+                except Exception:
+                    pass
+
+        return {'running': True, 'pid': proc.pid, 'url': tunnel_url}
+    except Exception as e:
+        return {'running': False, 'pid': None, 'url': None, 'error': str(e)}
+
+def stop_tunnel():
+    """Cloudflare Tunnel sürecini sonlandırır."""
+    try:
+        subprocess.run(['pkill', '-f', 'cloudflared tunnel'], check=False)
+        time.sleep(0.4)
+        if os.path.exists(TUNNEL_URL_FILE):
+            os.remove(TUNNEL_URL_FILE)
+        return {'running': False, 'stopped': True}
+    except Exception as e:
+        return {'running': False, 'error': str(e)}
+
