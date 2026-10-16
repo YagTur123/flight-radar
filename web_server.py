@@ -14,6 +14,7 @@ import urllib.parse
 import datetime
 import importlib.util
 import html
+import shutil
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import radar_helpers
@@ -95,7 +96,7 @@ def generate_google_flights_link(origin, destination, departure_date, return_dat
         q += f" through {return_date}"
     return f"https://www.google.com/travel/flights?q={urllib.parse.quote(q)}&curr=TRY&hl=tr"
 
-HTML_TEMPLATE = """<!DOCTYPE html>
+HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
@@ -952,7 +953,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <script>
         let openedCharts = new Set();
-        let currentTracks = [];
+        let currentTracks = __INITIAL_TRACKS_JSON__;
 
         function showToast(msg, isError = false) {
             const t = document.getElementById('toast');
@@ -2070,6 +2071,7 @@ class RadarHandler(BaseHTTPRequestHandler):
         rendered = rendered.replace('__TRACK_COUNT__', str(len(tracks)))
         rendered = rendered.replace('__AIRPORTS_DATALIST__', airports_options)
         rendered = rendered.replace('__FOREX_BAR__', forex_bar_html)
+        rendered = rendered.replace('__INITIAL_TRACKS_JSON__', json.dumps(tracks, ensure_ascii=False))
         rendered = rendered.replace('__TRACK_ITEMS__', track_items if tracks else '<div class="empty-state">Henüz takip edilen rota yok.</div>')
         rendered = rendered.replace('__CAMPAIGN_ITEMS__', campaign_items if campaign_list else '<div class="empty-state">Henüz kampanya yok.</div>')
 
@@ -2203,12 +2205,17 @@ class RadarHandler(BaseHTTPRequestHandler):
 
     def handle_notify_test(self):
         try:
-            subprocess.run([
-                'termux-notification',
-                '--title', '✈️ Test Bildirimi',
-                '--content', 'Flight Radar test mesajı başarıyla iletildi!'
-            ], check=False)
-            self.send_json({'success': True})
+            termux_bin = shutil.which('termux-notification')
+            if termux_bin:
+                subprocess.run([
+                    termux_bin,
+                    '--title', '✈️ Test Bildirimi',
+                    '--content', 'Flight Radar test mesajı başarıyla iletildi!'
+                ], check=False)
+            cfg = telegram_bot.get_telegram_config()
+            if cfg.get('bot_token') and cfg.get('chat_id'):
+                telegram_bot.test_telegram_connection()
+            self.send_json({'success': True, 'message': 'Test bildirimi tetiklendi.'})
         except Exception as e:
             log(f"Notify test failed: {e}")
             self.send_json({'success': False, 'error': str(e)}, 500)
